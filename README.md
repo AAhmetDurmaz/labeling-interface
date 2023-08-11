@@ -2,6 +2,8 @@
 
 Bu proje, resimleri işaretleme ve verileri saklama amacıyla kullanılan basit bir PyQt5 tabanlı bir arayüzü içerir. Kullanıcılar resimleri "Evet" veya "Hayır" olarak işaretleyebilir, işaretlenen veriler bir SQLite veritabanına kaydedilir ve kullanıcıların girdiği isim, grup ID ve işaretleme durumu saklanır.
 
+See this file in [English](README-EN.md)
+
 ## Gereksinimler
 
 - Python 3.x
