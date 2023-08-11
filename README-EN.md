@@ -1,4 +1,4 @@
-# Image Labeling Interface
+# Simple Labeling Interface
 
 This project includes a simple PyQt5 based interface for marking pictures and storing data. Users can mark images as "Yes" or "No", the marked data is saved in a SQLite database and the name, group ID and marking status entered by the users are stored.
 
