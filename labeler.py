@@ -2,9 +2,9 @@ import sys
 import sqlite3
 import os
 import datetime
-from PyQt5.QtCore import Qt, pyqtSlot, QRectF
+from PyQt5.QtCore import Qt, pyqtSlot, QRectF, QPointF
 from PyQt5.QtGui import QPixmap, QTransform, QIcon
-from PyQt5.QtWidgets import QGraphicsEllipseItem, QGraphicsRectItem, QGraphicsScene, QGraphicsView, QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget, QTableWidgetItem, QLineEdit, QRadioButton, QHeaderView, QLabel, QDialog, QMessageBox
+from PyQt5.QtWidgets import QAbstractItemView, QGraphicsEllipseItem, QGraphicsRectItem, QGraphicsScene, QGraphicsView, QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget, QTableWidgetItem, QLineEdit, QRadioButton, QHeaderView, QLabel, QDialog, QMessageBox
 
 
 def get_image_paths(folder):
@@ -22,6 +22,8 @@ class ImageWindow(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        global sqlcursor
+        global connection
 
         self.setWindowTitle("Resim Penceresi")
         self.setWindowIcon(QIcon('icons/icon.ico'))
@@ -35,15 +37,18 @@ class ImageWindow(QDialog):
         self.points = []
         self.current_image_path = None
 
-        self.scene.setSceneRect(0, 0, 2000, 2000)
+        self.scene.setSceneRect(0, 0, 0, 0)
 
         self.scene.mousePressEvent = self.on_scene_mouse_press
 
         fullscreen_icon = QPixmap("icons/fullscreen.svg")
         zoom_in_icon = QPixmap("icons/zoom_in.svg")
         zoom_out_icon = QPixmap("icons/zoom_out.svg")
+        clear_icon = QPixmap("icons/clear.svg")
         self.fullscreen_button = QPushButton("Tam Ekran", self)
         self.fullscreen_button.setIcon(QIcon(fullscreen_icon))
+        self.clear_button = QPushButton("Temizle", self)
+        self.clear_button.setIcon(QIcon(clear_icon))
         self.zoom_in_button = QPushButton("Yaklaştır", self)
         self.zoom_in_button.setIcon(QIcon(zoom_in_icon))
         self.zoom_out_button = QPushButton("Uzaklaştır", self)
@@ -51,18 +56,31 @@ class ImageWindow(QDialog):
 
         self.layout = QVBoxLayout(self)
         self.layout.addWidget(self.view)
-        self.layout.addWidget(self.fullscreen_button)
         button_layout = QHBoxLayout()
-        button_layout.addWidget(self.zoom_in_button)
-        button_layout.addWidget(self.zoom_out_button)
+        button_layout.addWidget(self.fullscreen_button)
+        button_layout.addWidget(self.clear_button)
         self.layout.addLayout(button_layout)
+        zoom_button_layout = QHBoxLayout()
+        zoom_button_layout.addWidget(self.zoom_in_button)
+        zoom_button_layout.addWidget(self.zoom_out_button)
+        self.layout.addLayout(zoom_button_layout)
 
         self.fullscreen_button.clicked.connect(self.toggle_fullscreen)
+        self.clear_button.clicked.connect(self.clear_labelings)
         self.zoom_in_button.clicked.connect(self.zoom_in)
         self.zoom_out_button.clicked.connect(self.zoom_out)
 
         self.is_fullscreen = False
         self.scale_factor = 1.0
+
+
+    def clear_labelings(self, event):
+        sqlcursor.execute("UPDATE veriler SET x1=NULL, y1=NULL, x2=NULL, y2=NULL WHERE image_path=?", (self.current_image_path,))
+        connection.commit()
+
+        self.bounding_box_item = None
+        self.update_image(self.current_image_path)
+
 
     @pyqtSlot()
     def zoom_in(self):
@@ -75,20 +93,24 @@ class ImageWindow(QDialog):
     @pyqtSlot()
     def zoom_out(self):
         scale_tr = QTransform()
-        scale_tr.scale(ImageWindow.factor, ImageWindow.factor)
+        scale_tr.scale(1 / ImageWindow.factor, 1 / ImageWindow.factor)
 
-        scale_inverted, invertible = scale_tr.inverted()
+        tr = self.view.transform() * scale_tr
+        self.view.setTransform(tr)
 
-        if invertible:
-            tr = self.view.transform() * scale_inverted
-            self.view.setTransform(tr)
-
-    def update_image(self, path):
+    def update_image(self, path, x1=None, y1=None, x2=None, y2=None):
         pixmap = QPixmap(path)
         self.scene.clear()
         self.scene.addPixmap(pixmap)
         self.view.setTransform(QTransform())
         self.current_image_path = path
+        
+        if x1 is not None and y1 is not None and x2 is not None and y2 is not None:
+            corner1 = QPointF(x1, y1)
+            corner2 = QPointF(x2, y2)
+            self.draw_bounding_box(corner1, corner2, save=False)
+        
+        self.view.viewport().update()
 
     def toggle_fullscreen(self):
         if not self.is_fullscreen:
@@ -110,37 +132,35 @@ class ImageWindow(QDialog):
                 self.add_point(pos, Qt.GlobalColor.red)
                 self.selected_corner = pos
             else:
-                self.draw_bounding_box(self.selected_corner, pos)
+                self.draw_bounding_box(self.selected_corner, pos, save=True)
                 self.selected_corner = None
 
-    def draw_bounding_box(self, corner1, corner2):
-        if self.bounding_box_item:
-            self.scene.removeItem(self.bounding_box_item)
-            self.bounding_box_item = None
-
-        for point in self.points:
-            self.scene.removeItem(point)
-        self.points = []
-
+    def draw_bounding_box(self, corner1, corner2, save: bool):
         rect = QRectF(corner1, corner2)
+
         self.bounding_box_item = QGraphicsRectItem(rect)
         self.scene.addItem(self.bounding_box_item)
 
         self.add_point(corner1, Qt.GlobalColor.green)
         self.add_point(corner2, Qt.GlobalColor.green)
 
-        self.save_bbox(corner1, corner2, self.current_image_path)
+        if save:
+            self.save_bbox(corner1, corner2, self.current_image_path)
+            self.update_image(self.current_image_path, corner1.x(), corner1.y(), corner2.x(), corner2.y())
+        self.view.viewport().update()
 
     def save_bbox(self, corner1, corner2, image_path):
-        # Burası bu şekilde yapılmamalı farkındayım.
-        # Daha sonra güncellenecek, hızlı bir yama gibi düşünün.
-        db_path = "labels.db"
+        global gTableWidget
+        sqlcursor.execute("UPDATE veriler SET x1 = ?, y1=?, x2=?, y2=? WHERE image_path = ?", (int(corner1.x()), int(corner1.y()), int(corner2.x()), int(corner2.y()), image_path))
+        connection.commit()
 
-        self.connection = sqlite3.connect(db_path)
-        self.cursor = self.connection.cursor()
-
-        self.cursor.execute("UPDATE veriler SET x1 = ?, y1=?, x2=?, y2=? WHERE image_path = ?", (int(corner1.x()), int(corner1.y()), int(corner2.x()), int(corner2.y()), image_path))
-        self.connection.commit()
+        row_count = gTableWidget.rowCount()
+        for row in range(row_count):
+            item_name = gTableWidget.item(row, 0)
+            item_name_text = item_name.text()
+            if item_name_text == image_path:
+                gTableWidget.setItem(row, 2, QTableWidgetItem("İşaretlendi"))
+                gTableWidget.item(row, 2).setBackground(Qt.green)
 
     def add_point(self, pos, color: Qt.GlobalColor):
         point = QGraphicsEllipseItem(QRectF(pos.x() - 5, pos.y() - 5, 10, 10))
@@ -148,8 +168,12 @@ class ImageWindow(QDialog):
         self.scene.addItem(point)
         self.points.append(point)
 
+
 class SimpleUI(QMainWindow):
     def __init__(self):
+        global connection
+        global sqlcursor
+        global gTableWidget
         super().__init__()
 
         self.setWindowTitle("Arayüz")
@@ -193,13 +217,16 @@ class SimpleUI(QMainWindow):
         self.button_layout.addWidget(self.no_button)
 
         self.table_widget = QTableWidget(self)
-        self.table_widget.setColumnCount(2)
+        self.table_widget.setColumnCount(3)  # 3 sütun ekliyoruz
+        self.table_widget.setEditTriggers(QAbstractItemView.NoEditTriggers)
         header = self.table_widget.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Stretch)
-        self.table_widget.setHorizontalHeaderLabels(["İsim", "Durum"])
+        self.table_widget.setHorizontalHeaderLabels(["İsim", "Durum", "Burun İşaretlemesi"])
         self.table_widget.setSelectionBehavior(QTableWidget.SelectRows)
         self.table_widget.setSelectionMode(QTableWidget.SingleSelection)
         self.table_widget.setRowCount(0)
+        gTableWidget = self.table_widget
+
 
         label_and_input_layout = QHBoxLayout()
         label_and_input_layout.addWidget(self.label)
@@ -223,7 +250,6 @@ class SimpleUI(QMainWindow):
         self.create_database()
         self.load_data()
 
-
     def closeEvent(self, event):
         self.save_username()
         event.accept()
@@ -235,8 +261,8 @@ class SimpleUI(QMainWindow):
             f.write(username)
             f.close()
 
-    def update_image(self, path):
-        self.image_window.update_image(path)
+    def update_image(self, path, x1=None, y1=None, x2=None, y2=None):
+        self.image_window.update_image(path, x1, y1, x2, y2)
 
     def on_yes_clicked(self):
         if self.validate_input():
@@ -263,9 +289,10 @@ class SimpleUI(QMainWindow):
                     next_item_name = self.table_widget.item(row + 1, 0)
                     next_item_name_text = next_item_name.text()
                     image_path = next_item_name_text
-                    self.update_image(image_path)
+                    x1, y1, x2, y2 = self.get_bbox_values(image_path)
+                    self.update_image(image_path, x1, y1, x2, y2)
                 else:
-                    self.image_window.update_image("")
+                    self.update_image("", None, None, None, None)
 
     def on_no_clicked(self):
         if self.validate_input():
@@ -292,9 +319,10 @@ class SimpleUI(QMainWindow):
                     next_item_name = self.table_widget.item(row + 1, 0)
                     next_item_name_text = next_item_name.text()
                     image_path = next_item_name_text
-                    self.update_image(image_path)
+                    x1, y1, x2, y2 = self.get_bbox_values(image_path)
+                    self.update_image(image_path, x1, y1, x2, y2)
                 else:
-                    self.image_window.update_image("")
+                    self.update_image("", None, None, None, None)
 
     def on_cell_clicked(self, row, column):
         if column == 0:
@@ -304,45 +332,43 @@ class SimpleUI(QMainWindow):
             item_status_text = item_status.text()
 
             if item_status_text != "İşaretlenmedi":
-                QMessageBox.warning(
-                    self, "Uyarı", "Bu resim daha önce işaretlenmiş, değiştirmek istiyorsanız tekrar işaretleme yapın.")
+                QMessageBox.warning(self, "Uyarı", "Bu resim daha önce işaretlenmiş, değiştirmek istiyorsanız tekrar işaretleme yapın.")
 
             image_path = item_name_text
-            self.update_image(image_path)
+            x1, y1, x2, y2 = self.get_bbox_values(image_path)
+            self.update_image(image_path, x1, y1, x2, y2)
 
     def create_database(self):
-        db_path = "labels.db"
         data_folder = "data"
 
-        self.connection = sqlite3.connect(db_path)
-        self.cursor = self.connection.cursor()
-
-        self.cursor.execute(f"CREATE TABLE IF NOT EXISTS veriler (id INTEGER PRIMARY KEY, who_labeled TEXT, who_labeled_group_id TEXT, value INTEGER DEFAULT -1, image_path TEXT, created_at DATETIME DEFAULT '{str(datetime.datetime.now())}', updated_at DATETIME DEFAULT NULL, deleted_at DATETIME DEFAULT NULL, x1 INTEGER, y1 INTEGER, x2 INTEGER, y2 INTEGER)")
-        self.connection.commit()
+        sqlcursor.execute(f"CREATE TABLE IF NOT EXISTS veriler (id INTEGER PRIMARY KEY, who_labeled TEXT, who_labeled_group_id TEXT, value INTEGER DEFAULT -1, image_path TEXT, created_at DATETIME DEFAULT '{str(datetime.datetime.now())}', updated_at DATETIME DEFAULT NULL, deleted_at DATETIME DEFAULT NULL, x1 INTEGER, y1 INTEGER, x2 INTEGER, y2 INTEGER)")
+        connection.commit()
 
         image_paths = get_image_paths(data_folder)
 
-        self.cursor.execute("SELECT image_path FROM veriler WHERE deleted_at IS NULL")
-        db_image_paths = [row[0] for row in self.cursor.fetchall()]
+        sqlcursor.execute("SELECT image_path FROM veriler WHERE deleted_at IS NULL")
+        db_image_paths = [row[0] for row in sqlcursor.fetchall()]
 
         for db_image_path in db_image_paths:
             if db_image_path not in image_paths:
-                self.cursor.execute(f"UPDATE veriler SET deleted_at = '{str(datetime.datetime.now())}' WHERE image_path = ?", (db_image_path,))
-                self.connection.commit()
+                sqlcursor.execute(f"UPDATE veriler SET deleted_at = '{str(datetime.datetime.now())}' WHERE image_path = ?", (db_image_path,))
+                connection.commit()
 
         for image_path in image_paths:
-            self.cursor.execute("SELECT * FROM veriler WHERE image_path = ? AND deleted_at IS NULL", (image_path,))
-            existing_data = self.cursor.fetchone()
+            sqlcursor.execute("SELECT * FROM veriler WHERE image_path = ? AND deleted_at IS NULL", (image_path,))
+            existing_data = sqlcursor.fetchone()
 
             if existing_data is None:
-                self.cursor.execute("INSERT INTO veriler (who_labeled, who_labeled_group_id, image_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",("", "", image_path, str(datetime.datetime.now()), str(datetime.datetime.now())))
-                self.connection.commit()
+                sqlcursor.execute("INSERT INTO veriler (who_labeled, who_labeled_group_id, image_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",("", "", image_path, str(datetime.datetime.now()), str(datetime.datetime.now())))
+                connection.commit()
 
     def load_data(self):
-        self.cursor.execute("SELECT * FROM veriler WHERE deleted_at IS NULL ORDER BY value ASC")
-        data = self.cursor.fetchall()
+        sqlcursor.execute("SELECT * FROM veriler WHERE deleted_at IS NULL ORDER BY value ASC")
+        data = sqlcursor.fetchall()
         for row in data:
             self.add_row_to_table(row)
+            if row[8] is not None and row[9] is not None and row[10] is not None and row[11] is not None:
+                self.update_image(row[4], row[8], row[9], row[10], row[11])
 
     def add_row_to_table(self, data):
         row_position = self.table_widget.rowCount()
@@ -359,10 +385,23 @@ class SimpleUI(QMainWindow):
             item_status.setBackground(Qt.yellow)
         self.table_widget.setItem(row_position, 0, item_name)
         self.table_widget.setItem(row_position, 1, item_status)
+        if data[8] is not None or data[9] is not None or data[10] is not None or data[11] is not None:
+            self.table_widget.setItem(row_position, 2, QTableWidgetItem("İşaretlendi"))
+            self.table_widget.item(row_position, 2).setBackground(Qt.green)
+        else:
+            self.table_widget.setItem(row_position, 2, QTableWidgetItem("İşaretleme Yok"))
+            self.table_widget.item(row_position, 2).setBackground(Qt.yellow)
 
     def save_to_database(self, who_labeled, who_labeled_group_id, value, image_path):
-        self.cursor.execute("UPDATE veriler SET who_labeled = ?, who_labeled_group_id = ?, value = ?, updated_at = ? WHERE image_path = ?", (who_labeled, who_labeled_group_id, value, str(datetime.datetime.now()), image_path))
-        self.connection.commit()
+        sqlcursor.execute("UPDATE veriler SET who_labeled = ?, who_labeled_group_id = ?, value = ?, updated_at = ? WHERE image_path = ?", (who_labeled, who_labeled_group_id, value, str(datetime.datetime.now()), image_path))
+        connection.commit()
+
+    def get_bbox_values(self, image_path):
+        sqlcursor.execute("SELECT x1, y1, x2, y2 FROM veriler WHERE image_path = ?", (image_path,))
+        bbox_data = sqlcursor.fetchone()
+        if bbox_data:
+            return bbox_data
+        return None, None, None, None
 
     def validate_input(self):
         if not self.name_input.text():
@@ -386,6 +425,12 @@ class SimpleUI(QMainWindow):
 
 
 if __name__ == "__main__":
+    global connection
+    global sqlcursor
+    db_path = "labels.db"
+    connection = sqlite3.connect(db_path)
+    sqlcursor = connection.cursor()
+
     app = QApplication(sys.argv)
     window = SimpleUI()
     window.show()
