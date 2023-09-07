@@ -203,7 +203,7 @@ class SimpleUI(QMainWindow):
         self.radio_label = QLabel("İnceleyen Birim:", self)
         self.radio_layout.addWidget(self.radio_label)
         self.radio_buttons = []
-        for label in ["ACİL", "RADYOLOJİ", "PEDİATRİ", "KBB"]:
+        for label in ["ACİL", "RADYOLOJİ", "PEDİATRİ", "KBB", "INTERN"]:
             radio_button = QRadioButton(label)
             self.radio_buttons.append(radio_button)
             self.radio_layout.addWidget(radio_button)
